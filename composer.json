@@ -1,0 +1,21 @@
+{
+    "name": "tebru/autobot",
+    "description": "Automatic data tranformers",
+    "require": {
+        "tebru/dynamo": "^0.1.3",
+        "tebru/assert": "^0.2.0"
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Nate Brunette",
+            "email": "n@tebru.net"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Tebru\\Autobot\\": "src/",
+            "Tebru\\Autobot\\Test\\": "tests/"
+        }
+    }
+}
