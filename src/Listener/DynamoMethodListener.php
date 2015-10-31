@@ -7,9 +7,11 @@
 namespace Tebru\Autobot\Listener;
 
 use ReflectionClass;
+use ReflectionParameter;
 use Tebru;
 use Tebru\Autobot\Annotation\Exclude;
 use Tebru\Autobot\Annotation\Map;
+use Tebru\Dynamo\Collection\AnnotationCollection;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
 use UnexpectedValueException;
@@ -22,10 +24,13 @@ use UnexpectedValueException;
 class DynamoMethodListener
 {
     const FORMAT_OBJECT = '$%s->%s';
+    const FORMAT_ARRAY = '$%s["%s"]';
     const FORMAT_GETTER_METHOD = '%s()';
     const FORMAT_GETTER_PUBLIC = '%s';
+    const FORMAT_GETTER_ARRAY = '%s';
     const FORMAT_SETTER_METHOD = '%s(%s)';
     const FORMAT_SETTER_PUBLIC = '%s = %s';
+    const FORMAT_SETTER_ARRAY = '%s = %s';
 
     public function __invoke(MethodEvent $event)
     {
@@ -41,9 +46,11 @@ class DynamoMethodListener
         /** @var ParameterModel $toParameter */
         $toParameter = array_shift($methodParameters);
 
+        $fromIsArray = ('array' === $fromParameter->getTypeHint()) ? true : false;
+
         // both parameters must be objects
         $toClass = new ReflectionClass($toParameter->getTypeHint());
-        $fromClass = new ReflectionClass($fromParameter->getTypeHint());
+        $fromClass = ($fromIsArray) ? null : new ReflectionClass($fromParameter->getTypeHint());
 
         $body = [];
 
@@ -53,12 +60,29 @@ class DynamoMethodListener
             $body[] = sprintf('}');
         }
 
+        $body = $this->parseClassProperties($body, $toClass, $event->getAnnotationCollection(), $fromIsArray, $fromParameter, $toParameter->getName(), $fromClass);
+
+        $body[] = sprintf('return $%s;', $toParameter->getName());
+
+        $methodModel->setBody(implode($body));
+    }
+
+    private function parseClassProperties(
+        array $body,
+        ReflectionClass $toClass,
+        AnnotationCollection $annotationCollection,
+        $fromIsArray,
+        ParameterModel $fromParameter,
+        $toParameterName,
+        ReflectionClass $fromClass = null,
+        array $parentKeys = []
+    ) {
         foreach ($toClass->getProperties() as $property) {
             $propertyName = $property->getName();
 
-            if ($event->getAnnotationCollection()->exists(Exclude::NAME)) {
+            if ($annotationCollection->exists(Exclude::NAME)) {
                 /** @var Exclude $annotation */
-                $annotation = $event->getAnnotationCollection()->get(Exclude::NAME);
+                $annotation = $annotationCollection->get(Exclude::NAME);
 
                 if ($annotation->shouldExclude($propertyName)) {
                     continue;
@@ -69,9 +93,9 @@ class DynamoMethodListener
             $setter = '';
 
             // check to see if there's a mapping that will override the default accessor
-            if ($event->getAnnotationCollection()->exists(Map::NAME)) {
+            if ($annotationCollection->exists(Map::NAME)) {
                 /** @var Map $mapAnnotation */
-                foreach ($event->getAnnotationCollection()->get(Map::NAME) as $mapAnnotation) {
+                foreach ($annotationCollection->get(Map::NAME) as $mapAnnotation) {
                     // skip processing if not for property
                     if ($mapAnnotation->getProperty() !== $propertyName) {
                         continue;
@@ -84,19 +108,34 @@ class DynamoMethodListener
 
             $publicProperty = (empty($getter)) ? $propertyName : $getter;
 
-            if ($fromClass->hasMethod($getter) || $fromClass->hasMethod('get' . ucfirst($propertyName))) {
+            $getFormat = self::FORMAT_OBJECT;
+
+            if (!$fromIsArray && ($fromClass->hasMethod($getter) || $fromClass->hasMethod('get' . ucfirst($propertyName)))) {
                 $getString = self::FORMAT_GETTER_METHOD;
                 $getter = (empty($getter)) ? 'get' . ucfirst($propertyName) : $getter;
-            } elseif ($fromClass->hasProperty($publicProperty) && $fromClass->getProperty($publicProperty)->isPublic()) {
+            } elseif (!$fromIsArray && ($fromClass->hasProperty($publicProperty) && $fromClass->getProperty($publicProperty)->isPublic())) {
                 $getString = self::FORMAT_GETTER_PUBLIC;
                 $getter = (empty($getter)) ? $propertyName : $getter;
+            } elseif ($fromIsArray) {
+                $getString = self::FORMAT_GETTER_ARRAY;
+                $getter = (empty($getter)) ? $propertyName : $getter;
+                $getFormat = self::FORMAT_ARRAY;
             } else {
                 throw new UnexpectedValueException('Unable to resolve getter');
             }
 
+            $parameterType = null;
+
             if ($toClass->hasMethod($setter) || $toClass->hasMethod('set' . ucfirst($propertyName))) {
                 $setString = self::FORMAT_SETTER_METHOD;
                 $setter = (empty($setter)) ? 'set' . ucfirst($propertyName) : $setter;
+
+                // get the type
+                $setterMethod = $toClass->getMethod($setter);
+
+                /** @var ReflectionParameter $parameter */
+                $parameter = $setterMethod->getParameters()[0];
+                $parameterType = $parameter->getClass();
             } elseif ($property->isPublic()) {
                 $setString = self::FORMAT_SETTER_PUBLIC;
                 $setter = $propertyName;
@@ -104,26 +143,71 @@ class DynamoMethodListener
                 throw new UnexpectedValueException('Unable to resolve setter');
             }
 
+            if ($fromIsArray && null !== $parameterType) {
+                $nestedClass = new ReflectionClass($parameterType->getName());
+                $parentKeys[] = $getter;
+
+                $nestedClassName = 'autobot' . $nestedClass->getShortName();
+                $body[] = sprintf('$%s = new %s();', $nestedClassName, $nestedClass->getName());
+
+                $body = $this->parseClassProperties($body, $nestedClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassName, $fromClass, $parentKeys);
+
+                $body[] = sprintf(
+                    $setString . ';',
+                    sprintf(
+                        self::FORMAT_OBJECT,
+                        $toParameterName,
+                        $setter
+                    ),
+                    '$' . $nestedClassName
+                );
+
+
+                $parentKeys = [];
+
+                continue;
+            }
+
+            if ($fromIsArray) {
+                $getFormat = $this->getArrayAccessString($parentKeys);
+                $body[] = sprintf('if (isset(%s)) {', sprintf($getFormat, $fromParameter->getName(), $getter));
+            }
+
             $body[] = sprintf(
                 $setString . ';',
                 sprintf(
                     self::FORMAT_OBJECT,
-                    $toParameter->getName(),
+                    $toParameterName,
                     $setter
                 ),
                 sprintf(
                     $getString,
                     sprintf(
-                        self::FORMAT_OBJECT,
+                        $getFormat,
                         $fromParameter->getName(),
                         $getter
                     )
                 )
             );
+
+            if ($fromIsArray) {
+                $body[] = sprintf('}');
+            }
         }
 
-        $body[] = sprintf('return $%s;', $toParameter->getName());
+        return $body;
+    }
 
-        $methodModel->setBody(implode($body));
+    private function getArrayAccessString(array $parentKeys = [])
+    {
+        $getter = ['$%s'];
+
+        foreach ($parentKeys as $key) {
+            $getter[] = sprintf('["%s"]', $key);
+        }
+
+        $getter[] = '["%s"]';
+
+        return implode($getter);
     }
 }
