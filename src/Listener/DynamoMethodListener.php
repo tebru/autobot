@@ -60,20 +60,23 @@ class DynamoMethodListener
         /** @var ParameterModel $toParameter */
         $toParameter = array_shift($methodParameters);
 
+        $toIsArray = ('array' === $toParameter->getTypeHint()) ? true : false;
         $fromIsArray = ('array' === $fromParameter->getTypeHint()) ? true : false;
 
-        $toClass = new ReflectionClass($toParameter->getTypeHint());
+        Tebru\assertFalse($toIsArray && $fromIsArray, 'Unable to do Array-to-Array transformations');
+
+        $toClass = ($toIsArray) ? null : new ReflectionClass($toParameter->getTypeHint());
         $fromClass = ($fromIsArray) ? null : new ReflectionClass($fromParameter->getTypeHint());
 
         $body = [];
 
-        if ($toParameter->isOptional()) {
+        if ($toParameter->isOptional() && !$toIsArray) {
             $body[] = sprintf('if (null === $%s) {', $toParameter->getName());
             $body[] = sprintf('$%s = new %s();', $toParameter->getName(), $toClass->getName());
             $body[] = sprintf('}');
         }
 
-        $body = $this->parseClassProperties($body, $toClass, $event->getAnnotationCollection(), $fromIsArray, $fromParameter, $toParameter->getName(), $fromClass);
+        $body = $this->parseClassProperties($body, $toIsArray, $toClass, $event->getAnnotationCollection(), $fromIsArray, $fromParameter, $fromParameter->getName(), $toParameter->getName(), $fromClass);
 
         $body[] = sprintf('return $%s;', $toParameter->getName());
 
@@ -82,15 +85,20 @@ class DynamoMethodListener
 
     private function parseClassProperties(
         array $body,
-        ReflectionClass $toClass,
+        $toIsArray,
+        ReflectionClass $toClass = null,
         AnnotationCollection $annotationCollection,
         $fromIsArray,
         ParameterModel $fromParameter,
+        $fromParameterName,
         $toParameterName,
         ReflectionClass $fromClass = null,
         array $parentKeys = []
     ) {
-        foreach ($toClass->getProperties() as $property) {
+        /** @var ReflectionClass $owningClass */
+        $owningClass = ($toIsArray) ? $fromClass : $toClass;
+
+        foreach ($owningClass->getProperties() as $property) {
             $propertyName = $property->getName();
 
             if ($annotationCollection->exists(Exclude::NAME)) {
@@ -121,6 +129,7 @@ class DynamoMethodListener
 
             $publicProperty = (empty($getter)) ? $propertyName : $getter;
             $getFormat = self::FORMAT_OBJECT;
+            $setFormat = self::FORMAT_OBJECT;
 
             if (empty($getter) && $annotationCollection->exists(GetterTransform::NAME)) {
                 /** @var GetterTransform $annotation */
@@ -131,9 +140,17 @@ class DynamoMethodListener
                 }
             }
 
-            if (!$fromIsArray && ($fromClass->hasMethod($getter) || $fromClass->hasMethod('get' . ucfirst($propertyName)))) {
+            if (!$fromIsArray && $fromClass->hasMethod($getter)) {
                 $getString = self::FORMAT_GETTER_METHOD;
-                $getter = (empty($getter)) ? 'get' . ucfirst($propertyName) : $getter;
+            } elseif (!$fromIsArray && $fromClass->hasMethod('get' . ucfirst($propertyName))) {
+                $getString = self::FORMAT_GETTER_METHOD;
+                $getter = 'get' . ucfirst($propertyName);
+            } elseif (!$fromIsArray && $fromClass->hasMethod('is' . ucfirst($propertyName))) {
+                $getString = self::FORMAT_GETTER_METHOD;
+                $getter = 'is' . ucfirst($propertyName);
+            } elseif (!$fromIsArray && $fromClass->hasMethod('has' . ucfirst($propertyName))) {
+                $getString = self::FORMAT_GETTER_METHOD;
+                $getter = 'has' . ucfirst($propertyName);
             } elseif (!$fromIsArray && ($fromClass->hasProperty($publicProperty) && $fromClass->getProperty($publicProperty)->isPublic())) {
                 $getString = self::FORMAT_GETTER_PUBLIC;
                 $getter = (empty($getter)) ? $propertyName : $getter;
@@ -147,45 +164,73 @@ class DynamoMethodListener
 
             $parameterType = null;
 
-            if ($toClass->hasMethod($setter) || $toClass->hasMethod('set' . ucfirst($propertyName))) {
-                $setString = self::FORMAT_SETTER_METHOD;
+            if ($owningClass->hasMethod($setter) || $owningClass->hasMethod('set' . ucfirst($propertyName))) {
                 $setter = (empty($setter)) ? 'set' . ucfirst($propertyName) : $setter;
-
-                // get the type
-                $setterMethod = $toClass->getMethod($setter);
-
-                /** @var ReflectionParameter $parameter */
+                $setterMethod = $owningClass->getMethod($setter);
                 $parameter = $setterMethod->getParameters()[0];
                 $parameterType = $parameter->getClass();
+            }
 
-                if (null === $parameterType) {
-                    $parameterType = $this->getType($annotationCollection, $property);
-                }
-            } elseif ($property->isPublic()) {
+            if (null === $parameterType) {
+                $parameterType = $this->getType($annotationCollection, $property);
+            }
+
+            if (!$toIsArray && $owningClass->hasMethod($setter)) {
+                $setString = self::FORMAT_SETTER_METHOD;
+            } elseif (!$toIsArray && $property->isPublic()) {
                 $setString = self::FORMAT_SETTER_PUBLIC;
                 $setter = $propertyName;
-                $parameterType = $this->getType($annotationCollection, $property);
+            } elseif ($toIsArray) {
+                $setString = self::FORMAT_SETTER_ARRAY;
+                $setter = $propertyName;
+                $setFormat = self::FORMAT_ARRAY;
             } else {
                 throw new UnexpectedValueException('Unable to resolve setter');
+            }
+
+            if ($toIsArray && null !== $parameterType) {
+                $nestedClass = new ReflectionClass($parameterType->getName());
+                $parentKeys[] = $setter;
+
+                $nestedClassVariableName = 'autobot' . $parameterType->getShortName() . uniqid();
+                $body[] = sprintf(
+                    '$%s = %s;',
+                    $nestedClassVariableName,
+                    sprintf(
+                        $getString,
+                        sprintf(
+                            $getFormat,
+                            $fromParameterName,
+                            $getter
+                        )
+                    )
+                );
+
+
+                $body = $this->parseClassProperties($body, $toIsArray, $toClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassVariableName, $toParameterName, $nestedClass, $parentKeys);
+
+                $parentKeys = [];
+
+                continue;
             }
 
             if ($fromIsArray && null !== $parameterType) {
                 $nestedClass = new ReflectionClass($parameterType->getName());
                 $parentKeys[] = $getter;
 
-                $nestedClassName = 'autobot' . $nestedClass->getShortName() . uniqid();
-                $body[] = sprintf('$%s = new %s();', $nestedClassName, $nestedClass->getName());
+                $nestedClassVariableName = 'autobot' . $nestedClass->getShortName() . uniqid();
+                $body[] = sprintf('$%s = new %s();', $nestedClassVariableName, $nestedClass->getName());
 
-                $body = $this->parseClassProperties($body, $nestedClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassName, $fromClass, $parentKeys);
+                $body = $this->parseClassProperties($body, $toIsArray, $nestedClass, $annotationCollection, $fromIsArray, $fromParameter, $fromParameterName, $nestedClassVariableName, $fromClass, $parentKeys);
 
                 $body[] = sprintf(
                     $setString . ';',
                     sprintf(
-                        self::FORMAT_OBJECT,
+                        $setFormat,
                         $toParameterName,
                         $setter
                     ),
-                    '$' . $nestedClassName
+                    '$' . $nestedClassVariableName
                 );
 
 
@@ -196,13 +241,17 @@ class DynamoMethodListener
 
             if ($fromIsArray) {
                 $getFormat = $this->getArrayAccessString($parentKeys);
-                $body[] = sprintf('if (isset(%s)) {', sprintf($getFormat, $fromParameter->getName(), $getter));
+                $body[] = sprintf('if (isset(%s)) {', sprintf($getFormat, $fromParameterName, $getter));
+            }
+
+            if ($toIsArray) {
+                $setFormat = $this->getArrayAccessString($parentKeys);
             }
 
             $body[] = sprintf(
                 $setString . ';',
                 sprintf(
-                    self::FORMAT_OBJECT,
+                    $setFormat,
                     $toParameterName,
                     $setter
                 ),
@@ -210,7 +259,7 @@ class DynamoMethodListener
                     $getString,
                     sprintf(
                         $getFormat,
-                        $fromParameter->getName(),
+                        $fromParameterName,
                         $getter
                     )
                 )
