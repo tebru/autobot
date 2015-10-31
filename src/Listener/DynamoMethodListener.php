@@ -11,8 +11,10 @@ use ReflectionParameter;
 use ReflectionProperty;
 use Tebru;
 use Tebru\Autobot\Annotation\Exclude;
+use Tebru\Autobot\Annotation\GetterTransform;
 use Tebru\Autobot\Annotation\Map;
 use Tebru\Autobot\Annotation\Type;
+use Tebru\Autobot\NameTransformer;
 use Tebru\Dynamo\Collection\AnnotationCollection;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
@@ -33,6 +35,16 @@ class DynamoMethodListener
     const FORMAT_SETTER_METHOD = '%s(%s)';
     const FORMAT_SETTER_PUBLIC = '%s = %s';
     const FORMAT_SETTER_ARRAY = '%s = %s';
+
+    /**
+     * @var NameTransformer[]
+     */
+    private $getterNameTransformers = [];
+
+    public function setGetterNameTransformer($key, NameTransformer $transformer)
+    {
+        $this->getterNameTransformers[$key] = $transformer;
+    }
 
     public function __invoke(MethodEvent $event)
     {
@@ -108,8 +120,16 @@ class DynamoMethodListener
             }
 
             $publicProperty = (empty($getter)) ? $propertyName : $getter;
-
             $getFormat = self::FORMAT_OBJECT;
+
+            if (empty($getter) && $annotationCollection->exists(GetterTransform::NAME)) {
+                /** @var GetterTransform $annotation */
+                $annotation = $annotationCollection->get(GetterTransform::NAME);
+
+                if (isset($this->getterNameTransformers[$annotation->getTransformer()])) {
+                    $getter = $this->getterNameTransformers[$annotation->getTransformer()]->transform($propertyName);
+                }
+            }
 
             if (!$fromIsArray && ($fromClass->hasMethod($getter) || $fromClass->hasMethod('get' . ucfirst($propertyName)))) {
                 $getString = self::FORMAT_GETTER_METHOD;
