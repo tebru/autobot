@@ -6,43 +6,47 @@
 
 namespace Tebru\Autobot\Annotation;
 
+use Tebru;
 use Tebru\Dynamo\Annotation\DynamoAnnotation;
 
 /**
- * Class Exclude
+ * Class Type
  *
  * @author Nate Brunette <n@tebru.net>
  *
  * @Annotation
  * @Target({"CLASS", "METHOD"})
  */
-class Exclude implements DynamoAnnotation
+class Type implements DynamoAnnotation
 {
-    const NAME = 'exclude';
+    const NAME = 'type';
 
-    private $excludes;
+    private $property;
+    private $type;
 
     public function __construct(array $values)
     {
-        $excludes = $values['value'];
-        if (!is_array($excludes)) {
-            $excludes = [$excludes];
-        }
+        Tebru\assertThat(isset($values['value']), '@Type must be passed a property name as the first value');
+        Tebru\assertThat(isset($values['type']), '@Type must be passed a type');
 
-        $this->excludes = $excludes;
+        $this->property = $values['value'];
+        $this->type = $values['type'];
     }
 
     /**
-     * @return array
+     * @return string
      */
-    public function getExcludes()
+    public function getProperty()
     {
-        return $this->excludes;
+        return $this->property;
     }
 
-    public function shouldExclude($propertyName)
+    /**
+     * @return string
+     */
+    public function getType()
     {
-        return in_array($propertyName, $this->excludes);
+        return $this->type;
     }
 
     /**
@@ -63,6 +67,6 @@ class Exclude implements DynamoAnnotation
      */
     public function allowMultiple()
     {
-        return false;
+        return true;
     }
 }

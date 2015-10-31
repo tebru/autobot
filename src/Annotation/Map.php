@@ -25,7 +25,7 @@ class Map implements DynamoAnnotation
     private $getter;
     private $setter;
 
-    public function __construct($values)
+    public function __construct(array $values)
     {
         Tebru\assertThat(isset($values['value']), '@Map must be passed a property name as the first argument');
 

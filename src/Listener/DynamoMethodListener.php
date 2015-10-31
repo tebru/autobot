@@ -8,9 +8,11 @@ namespace Tebru\Autobot\Listener;
 
 use ReflectionClass;
 use ReflectionParameter;
+use ReflectionProperty;
 use Tebru;
 use Tebru\Autobot\Annotation\Exclude;
 use Tebru\Autobot\Annotation\Map;
+use Tebru\Autobot\Annotation\Type;
 use Tebru\Dynamo\Collection\AnnotationCollection;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
@@ -48,7 +50,6 @@ class DynamoMethodListener
 
         $fromIsArray = ('array' === $fromParameter->getTypeHint()) ? true : false;
 
-        // both parameters must be objects
         $toClass = new ReflectionClass($toParameter->getTypeHint());
         $fromClass = ($fromIsArray) ? null : new ReflectionClass($fromParameter->getTypeHint());
 
@@ -136,9 +137,14 @@ class DynamoMethodListener
                 /** @var ReflectionParameter $parameter */
                 $parameter = $setterMethod->getParameters()[0];
                 $parameterType = $parameter->getClass();
+
+                if (null === $parameterType) {
+                    $parameterType = $this->getType($annotationCollection, $property);
+                }
             } elseif ($property->isPublic()) {
                 $setString = self::FORMAT_SETTER_PUBLIC;
                 $setter = $propertyName;
+                $parameterType = $this->getType($annotationCollection, $property);
             } else {
                 throw new UnexpectedValueException('Unable to resolve setter');
             }
@@ -147,7 +153,7 @@ class DynamoMethodListener
                 $nestedClass = new ReflectionClass($parameterType->getName());
                 $parentKeys[] = $getter;
 
-                $nestedClassName = 'autobot' . $nestedClass->getShortName();
+                $nestedClassName = 'autobot' . $nestedClass->getShortName() . uniqid();
                 $body[] = sprintf('$%s = new %s();', $nestedClassName, $nestedClass->getName());
 
                 $body = $this->parseClassProperties($body, $nestedClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassName, $fromClass, $parentKeys);
@@ -209,5 +215,23 @@ class DynamoMethodListener
         $getter[] = '["%s"]';
 
         return implode($getter);
+    }
+
+    private function getType(AnnotationCollection $annotationCollection, ReflectionProperty $property)
+    {
+        if (!$annotationCollection->exists(Type::NAME)) {
+            return null;
+        }
+
+        /** @var Type $typeAnnotation */
+        foreach ($annotationCollection->get(Type::NAME) as $typeAnnotation) {
+            if ($typeAnnotation->getProperty() !== $property->getName()) {
+                continue;
+            }
+
+            return new ReflectionClass($typeAnnotation->getType());
+        }
+
+        return null;
     }
 }
