@@ -7,12 +7,12 @@
 namespace Tebru\Autobot\Listener;
 
 use ReflectionClass;
-use ReflectionParameter;
 use ReflectionProperty;
 use Tebru;
 use Tebru\Autobot\Annotation\Exclude;
 use Tebru\Autobot\Annotation\GetterTransform;
 use Tebru\Autobot\Annotation\Map;
+use Tebru\Autobot\Annotation\SetterTransform;
 use Tebru\Autobot\Annotation\Type;
 use Tebru\Autobot\NameTransformer;
 use Tebru\Dynamo\Collection\AnnotationCollection;
@@ -41,9 +41,19 @@ class DynamoMethodListener
      */
     private $getterNameTransformers = [];
 
+    /**
+     * @var NameTransformer[]
+     */
+    private $setterNameTransformers = [];
+
     public function setGetterNameTransformer($key, NameTransformer $transformer)
     {
         $this->getterNameTransformers[$key] = $transformer;
+    }
+
+    public function setSetterNameTransformer($key, NameTransformer $transformer)
+    {
+        $this->setterNameTransformers[$key] = $transformer;
     }
 
     public function __invoke(MethodEvent $event)
@@ -112,6 +122,7 @@ class DynamoMethodListener
 
             $getter = '';
             $setter = '';
+            $setMethod = 'set' . ucfirst($propertyName);
 
             // check to see if there's a mapping that will override the default accessor
             if ($annotationCollection->exists(Map::NAME)) {
@@ -140,6 +151,15 @@ class DynamoMethodListener
                 }
             }
 
+            if (empty($setter) && $annotationCollection->exists(SetterTransform::NAME)) {
+                /** @var SetterTransform $annotation */
+                $annotation = $annotationCollection->get(SetterTransform::NAME);
+
+                if (isset($this->setterNameTransformers[$annotation->getTransformer()])) {
+                    $setter = $this->setterNameTransformers[$annotation->getTransformer()]->transform($propertyName);
+                }
+            }
+
             if (!$fromIsArray && $fromClass->hasMethod($getter)) {
                 $getString = self::FORMAT_GETTER_METHOD;
             } elseif (!$fromIsArray && $fromClass->hasMethod('get' . ucfirst($propertyName))) {
@@ -164,9 +184,9 @@ class DynamoMethodListener
 
             $parameterType = null;
 
-            if ($owningClass->hasMethod($setter) || $owningClass->hasMethod('set' . ucfirst($propertyName))) {
-                $setter = (empty($setter)) ? 'set' . ucfirst($propertyName) : $setter;
-                $setterMethod = $owningClass->getMethod($setter);
+            if ($owningClass->hasMethod($setter) || $owningClass->hasMethod($setMethod)) {
+                $setterCheck = ($owningClass->hasMethod($setter)) ? $setter : $setMethod;
+                $setterMethod = $owningClass->getMethod($setterCheck);
                 $parameter = $setterMethod->getParameters()[0];
                 $parameterType = $parameter->getClass();
             }
@@ -175,14 +195,15 @@ class DynamoMethodListener
                 $parameterType = $this->getType($annotationCollection, $property);
             }
 
-            if (!$toIsArray && $owningClass->hasMethod($setter)) {
+            if (!$toIsArray && ($owningClass->hasMethod($setter) || $owningClass->hasMethod($setMethod))) {
+                $setter = ($owningClass->hasMethod($setter)) ? $setter : $setMethod;
                 $setString = self::FORMAT_SETTER_METHOD;
             } elseif (!$toIsArray && $property->isPublic()) {
                 $setString = self::FORMAT_SETTER_PUBLIC;
-                $setter = $propertyName;
+                $setter = empty($setter) ? $propertyName : $setter;
             } elseif ($toIsArray) {
                 $setString = self::FORMAT_SETTER_ARRAY;
-                $setter = $propertyName;
+                $setter = empty($setter) ? $propertyName : $setter;
                 $setFormat = self::FORMAT_ARRAY;
             } else {
                 throw new UnexpectedValueException('Unable to resolve setter');
