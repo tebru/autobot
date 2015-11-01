@@ -30,8 +30,8 @@ class Map implements DynamoAnnotation
         Tebru\assertThat(isset($values['value']), '@Map must be passed a property name as the first argument');
 
         $this->property = $values['value'];
-        $this->getter = isset($values['getter']) ? $values['getter'] : 'get' . ucfirst($this->property);
-        $this->setter = isset($values['setter']) ? $values['setter'] : 'set' . ucfirst($this->property);
+        $this->getter = isset($values['getter']) ? $values['getter'] : '';
+        $this->setter = isset($values['setter']) ? $values['setter'] : '';
     }
 
     /**

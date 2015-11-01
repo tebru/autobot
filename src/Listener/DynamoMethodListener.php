@@ -18,7 +18,6 @@ use Tebru\Autobot\NameTransformer;
 use Tebru\Dynamo\Collection\AnnotationCollection;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
-use UnexpectedValueException;
 
 /**
  * Class DynamoMethodListener
@@ -179,7 +178,7 @@ class DynamoMethodListener
                 $getter = (empty($getter)) ? $propertyName : $getter;
                 $getFormat = self::FORMAT_ARRAY;
             } else {
-                throw new UnexpectedValueException('Unable to resolve getter');
+                continue;
             }
 
             $parameterType = null;
@@ -206,7 +205,7 @@ class DynamoMethodListener
                 $setter = empty($setter) ? $propertyName : $setter;
                 $setFormat = self::FORMAT_ARRAY;
             } else {
-                throw new UnexpectedValueException('Unable to resolve setter');
+                continue;
             }
 
             if ($toIsArray && null !== $parameterType) {
@@ -230,7 +229,7 @@ class DynamoMethodListener
 
                 $body = $this->parseClassProperties($body, $toIsArray, $toClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassVariableName, $toParameterName, $nestedClass, $parentKeys);
 
-                $parentKeys = [];
+                array_pop($parentKeys);
 
                 continue;
             }
@@ -255,7 +254,7 @@ class DynamoMethodListener
                 );
 
 
-                $parentKeys = [];
+                array_pop($parentKeys);
 
                 continue;
             }
