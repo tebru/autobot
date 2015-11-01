@@ -151,8 +151,7 @@ class DynamoMethodListener
 
             if ($schema->mapToArray() && null !== $parameterType) {
                 $nestedClass = new ReflectionClass($parameterType->getName());
-                $nestedClassVariableName = 'autobot' . $parameterType->getShortName() . uniqid();
-                $parentKeys[] = $setter;
+                $nestedClassVariableName = $parameterType->getShortName() . '_' . uniqid();
                 $body[] = $this->printer->printLine(
                     Printer::SET_FORMAT_VARIABLE,
                     $getPrintFormat,
@@ -167,18 +166,15 @@ class DynamoMethodListener
                     $body,
                     $toParameterName,
                     $nestedClassVariableName,
-                    $parentKeys
+                    array_merge($parentKeys, [$setter])
                 );
-
-                array_pop($parentKeys);
 
                 continue;
             }
 
             if ($schema->mapFromArray() && null !== $parameterType) {
                 $nestedClass = new ReflectionClass($parameterType->getName());
-                $nestedClassVariableName = 'autobot' . $nestedClass->getShortName() . uniqid();
-                $parentKeys[] = $getter;
+                $nestedClassVariableName = $nestedClass->getShortName() . '_' . uniqid();
                 $body[] = sprintf('$%s = new %s();', $nestedClassVariableName, $nestedClass->getName());
 
                 $body = $this->parseClassProperties(
@@ -186,7 +182,7 @@ class DynamoMethodListener
                     $body,
                     $nestedClassVariableName,
                     $fromParameterName,
-                    $parentKeys
+                    array_merge($parentKeys, [$getter])
                 );
 
                 $body[] = $this->printer->printLine(
@@ -197,8 +193,6 @@ class DynamoMethodListener
                     $nestedClassVariableName,
                     ''
                 );
-
-                array_pop($parentKeys);
 
                 continue;
             }
