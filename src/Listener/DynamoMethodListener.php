@@ -7,15 +7,13 @@
 namespace Tebru\Autobot\Listener;
 
 use ReflectionClass;
-use ReflectionProperty;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Tebru;
-use Tebru\Autobot\Annotation\Exclude;
-use Tebru\Autobot\Annotation\GetterTransform;
-use Tebru\Autobot\Annotation\Map;
-use Tebru\Autobot\Annotation\SetterTransform;
-use Tebru\Autobot\Annotation\Type;
-use Tebru\Autobot\NameTransformer;
-use Tebru\Dynamo\Collection\AnnotationCollection;
+use Tebru\Autobot\Event\AccessorTransformerEvent;
+use Tebru\Autobot\Provider\AnnotationProvider;
+use Tebru\Autobot\Provider\Printer;
+use Tebru\Autobot\Provider\Schema;
+use Tebru\Autobot\Provider\TypeProvider;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
 
@@ -26,33 +24,29 @@ use Tebru\Dynamo\Model\ParameterModel;
  */
 class DynamoMethodListener
 {
-    const FORMAT_OBJECT = '$%s->%s';
-    const FORMAT_ARRAY = '$%s["%s"]';
-    const FORMAT_GETTER_METHOD = '%s()';
-    const FORMAT_GETTER_PUBLIC = '%s';
-    const FORMAT_GETTER_ARRAY = '%s';
-    const FORMAT_SETTER_METHOD = '%s(%s)';
-    const FORMAT_SETTER_PUBLIC = '%s = %s';
-    const FORMAT_SETTER_ARRAY = '%s = %s';
+    /**
+     * @var EventDispatcherInterface
+     */
+    private $eventDispatcher;
 
     /**
-     * @var NameTransformer[]
+     * @var AnnotationProvider
      */
-    private $getterNameTransformers = [];
+    private $annotationProvider;
 
     /**
-     * @var NameTransformer[]
+     * @var Printer
      */
-    private $setterNameTransformers = [];
+    private $printer;
 
-    public function setGetterNameTransformer($key, NameTransformer $transformer)
+    /**
+     * Constructor
+     *
+     * @param EventDispatcherInterface $eventDispatcher
+     */
+    public function __construct(EventDispatcherInterface $eventDispatcher)
     {
-        $this->getterNameTransformers[$key] = $transformer;
-    }
-
-    public function setSetterNameTransformer($key, NameTransformer $transformer)
-    {
-        $this->setterNameTransformers[$key] = $transformer;
+        $this->eventDispatcher = $eventDispatcher;
     }
 
     public function __invoke(MethodEvent $event)
@@ -77,6 +71,8 @@ class DynamoMethodListener
         $toClass = ($toIsArray) ? null : new ReflectionClass($toParameter->getTypeHint());
         $fromClass = ($fromIsArray) ? null : new ReflectionClass($fromParameter->getTypeHint());
 
+        $schema = new Schema($toClass, $fromClass);
+
         $body = [];
 
         if ($toParameter->isOptional() && !$toIsArray) {
@@ -85,7 +81,10 @@ class DynamoMethodListener
             $body[] = sprintf('}');
         }
 
-        $body = $this->parseClassProperties($body, $toIsArray, $toClass, $event->getAnnotationCollection(), $fromIsArray, $fromParameter, $fromParameter->getName(), $toParameter->getName(), $fromClass);
+        $this->annotationProvider = new AnnotationProvider($event->getAnnotationCollection());
+        $this->printer = new Printer();
+
+        $body = $this->parseClassProperties($schema, $body, $toParameter->getName(), $fromParameter->getName());
 
         $body[] = sprintf('return $%s;', $toParameter->getName());
 
@@ -93,234 +92,133 @@ class DynamoMethodListener
     }
 
     private function parseClassProperties(
+        Schema $schema,
         array $body,
-        $toIsArray,
-        ReflectionClass $toClass = null,
-        AnnotationCollection $annotationCollection,
-        $fromIsArray,
-        ParameterModel $fromParameter,
-        $fromParameterName,
         $toParameterName,
-        ReflectionClass $fromClass = null,
+        $fromParameterName,
         array $parentKeys = []
     ) {
-        /** @var ReflectionClass $owningClass */
-        $owningClass = ($toIsArray) ? $fromClass : $toClass;
+        $typeProvider = new TypeProvider($schema, $this->annotationProvider);
 
-        foreach ($owningClass->getProperties() as $property) {
+        foreach ($schema->getProperties() as $property) {
             $propertyName = $property->getName();
 
-            if ($annotationCollection->exists(Exclude::NAME)) {
-                /** @var Exclude $annotation */
-                $annotation = $annotationCollection->get(Exclude::NAME);
-
-                if ($annotation->shouldExclude($propertyName)) {
-                    continue;
-                }
-            }
-
-            $getter = '';
-            $setter = '';
-            $setMethod = 'set' . ucfirst($propertyName);
-
-            // check to see if there's a mapping that will override the default accessor
-            if ($annotationCollection->exists(Map::NAME)) {
-                /** @var Map $mapAnnotation */
-                foreach ($annotationCollection->get(Map::NAME) as $mapAnnotation) {
-                    // skip processing if not for property
-                    if ($mapAnnotation->getProperty() !== $propertyName) {
-                        continue;
-                    }
-
-                    $getter = $mapAnnotation->getGetter();
-                    $setter = $mapAnnotation->getSetter();
-                }
-            }
-
-            $publicProperty = (empty($getter)) ? $propertyName : $getter;
-            $getFormat = self::FORMAT_OBJECT;
-            $setFormat = self::FORMAT_OBJECT;
-
-            if (empty($getter) && $annotationCollection->exists(GetterTransform::NAME)) {
-                /** @var GetterTransform $annotation */
-                $annotation = $annotationCollection->get(GetterTransform::NAME);
-
-                if (isset($this->getterNameTransformers[$annotation->getTransformer()])) {
-                    $getter = $this->getterNameTransformers[$annotation->getTransformer()]->transform($propertyName);
-                }
-            }
-
-            if (empty($setter) && $annotationCollection->exists(SetterTransform::NAME)) {
-                /** @var SetterTransform $annotation */
-                $annotation = $annotationCollection->get(SetterTransform::NAME);
-
-                if (isset($this->setterNameTransformers[$annotation->getTransformer()])) {
-                    $setter = $this->setterNameTransformers[$annotation->getTransformer()]->transform($propertyName);
-                }
-            }
-
-            if (!$fromIsArray && $fromClass->hasMethod($getter)) {
-                $getString = self::FORMAT_GETTER_METHOD;
-            } elseif (!$fromIsArray && $fromClass->hasMethod('get' . ucfirst($propertyName))) {
-                $getString = self::FORMAT_GETTER_METHOD;
-                $getter = 'get' . ucfirst($propertyName);
-            } elseif (!$fromIsArray && $fromClass->hasMethod('is' . ucfirst($propertyName))) {
-                $getString = self::FORMAT_GETTER_METHOD;
-                $getter = 'is' . ucfirst($propertyName);
-            } elseif (!$fromIsArray && $fromClass->hasMethod('has' . ucfirst($propertyName))) {
-                $getString = self::FORMAT_GETTER_METHOD;
-                $getter = 'has' . ucfirst($propertyName);
-            } elseif (!$fromIsArray && ($fromClass->hasProperty($publicProperty) && $fromClass->getProperty($publicProperty)->isPublic())) {
-                $getString = self::FORMAT_GETTER_PUBLIC;
-                $getter = (empty($getter)) ? $propertyName : $getter;
-            } elseif ($fromIsArray) {
-                $getString = self::FORMAT_GETTER_ARRAY;
-                $getter = (empty($getter)) ? $propertyName : $getter;
-                $getFormat = self::FORMAT_ARRAY;
-            } else {
+            if ($this->annotationProvider->shouldExclude($propertyName)) {
                 continue;
             }
 
-            $parameterType = null;
+            // check if a map exists
+            $getter = $this->annotationProvider->getMappedGetter($propertyName);
+            $setter = $this->annotationProvider->getMappedSetter($propertyName);
 
-            if ($owningClass->hasMethod($setter) || $owningClass->hasMethod($setMethod)) {
-                $setterCheck = ($owningClass->hasMethod($setter)) ? $setter : $setMethod;
-                $setterMethod = $owningClass->getMethod($setterCheck);
-                $parameter = $setterMethod->getParameters()[0];
-                $parameterType = $parameter->getClass();
+            $getterTransformer = $this->annotationProvider->getGetterTransformer();
+            if (null !== $getterTransformer) {
+                $event = new AccessorTransformerEvent($propertyName, $getter, $schema->getFromClass());
+                $this->eventDispatcher->dispatch('accessor_transform.' . $getterTransformer, $event);
+                $getter = $event->getAccessor();
             }
 
-            if (null === $parameterType) {
-                $parameterType = $this->getType($annotationCollection, $property);
-            }
+            // dispatch the default event after a transformer
+            $event = new AccessorTransformerEvent($propertyName, $getter, $schema->getFromClass());
+            $this->eventDispatcher->dispatch('accessor_transform.getter_default', $event);
 
-            if (!$toIsArray && ($owningClass->hasMethod($setter) || $owningClass->hasMethod($setMethod))) {
-                $setter = ($owningClass->hasMethod($setter)) ? $setter : $setMethod;
-                $setString = self::FORMAT_SETTER_METHOD;
-            } elseif (!$toIsArray && $property->isPublic()) {
-                $setString = self::FORMAT_SETTER_PUBLIC;
-                $setter = empty($setter) ? $propertyName : $setter;
-            } elseif ($toIsArray) {
-                $setString = self::FORMAT_SETTER_ARRAY;
-                $setter = empty($setter) ? $propertyName : $setter;
-                $setFormat = self::FORMAT_ARRAY;
-            } else {
+            $getter = $event->getAccessor();
+            $getPrintFormat = $event->getGetPrintFormat();
+
+            if (null === $getter) {
                 continue;
             }
 
-            if ($toIsArray && null !== $parameterType) {
+            $setterTransformer = $this->annotationProvider->getSetterTransformer();
+            if (null !== $setterTransformer) {
+                $event = new AccessorTransformerEvent($propertyName, $setter, $schema->getToClass());
+                $this->eventDispatcher->dispatch('accessor_transform.' . $setterTransformer, $event);
+                $setter = $event->getPropertyName();
+            }
+
+            // dispatch the default event after a transformer
+            $event = new AccessorTransformerEvent($propertyName, $setter, $schema->getToClass());
+            $this->eventDispatcher->dispatch('accessor_transform.setter_default', $event);
+
+            $setter = $event->getAccessor();
+            $setPrintFormat = $event->getSetPrintFormat();
+
+            if (null === $setter) {
+                continue;
+            }
+
+            $parameterType = $typeProvider->getType($setter, $propertyName);
+
+            if ($schema->mapToArray() && null !== $parameterType) {
                 $nestedClass = new ReflectionClass($parameterType->getName());
-                $parentKeys[] = $setter;
-
                 $nestedClassVariableName = 'autobot' . $parameterType->getShortName() . uniqid();
-                $body[] = sprintf(
-                    '$%s = %s;',
+                $parentKeys[] = $setter;
+                $body[] = $this->printer->printLine(
+                    Printer::SET_FORMAT_VARIABLE,
+                    $getPrintFormat,
                     $nestedClassVariableName,
-                    sprintf(
-                        $getString,
-                        sprintf(
-                            $getFormat,
-                            $fromParameterName,
-                            $getter
-                        )
-                    )
+                    '',
+                    $fromParameterName,
+                    $getter
                 );
 
-
-                $body = $this->parseClassProperties($body, $toIsArray, $toClass, $annotationCollection, $fromIsArray, $fromParameter, $nestedClassVariableName, $toParameterName, $nestedClass, $parentKeys);
+                $body = $this->parseClassProperties(
+                    new Schema($schema->getToClass(), $nestedClass),
+                    $body,
+                    $toParameterName,
+                    $nestedClassVariableName,
+                    $parentKeys
+                );
 
                 array_pop($parentKeys);
 
                 continue;
             }
 
-            if ($fromIsArray && null !== $parameterType) {
+            if ($schema->mapFromArray() && null !== $parameterType) {
                 $nestedClass = new ReflectionClass($parameterType->getName());
-                $parentKeys[] = $getter;
-
                 $nestedClassVariableName = 'autobot' . $nestedClass->getShortName() . uniqid();
+                $parentKeys[] = $getter;
                 $body[] = sprintf('$%s = new %s();', $nestedClassVariableName, $nestedClass->getName());
 
-                $body = $this->parseClassProperties($body, $toIsArray, $nestedClass, $annotationCollection, $fromIsArray, $fromParameter, $fromParameterName, $nestedClassVariableName, $fromClass, $parentKeys);
-
-                $body[] = sprintf(
-                    $setString . ';',
-                    sprintf(
-                        $setFormat,
-                        $toParameterName,
-                        $setter
-                    ),
-                    '$' . $nestedClassVariableName
+                $body = $this->parseClassProperties(
+                    new Schema($nestedClass, $schema->getFromClass()),
+                    $body,
+                    $nestedClassVariableName,
+                    $fromParameterName,
+                    $parentKeys
                 );
 
+                $body[] = $this->printer->printLine(
+                    $setPrintFormat,
+                    Printer::GET_FORMAT_VARIABLE,
+                    $toParameterName,
+                    $setter,
+                    $nestedClassVariableName,
+                    ''
+                );
 
                 array_pop($parentKeys);
 
                 continue;
             }
 
-            if ($fromIsArray) {
-                $getFormat = $this->getArrayAccessString($parentKeys);
-                $body[] = sprintf('if (isset(%s)) {', sprintf($getFormat, $fromParameterName, $getter));
+            if ($schema->mapFromArray()) {
+                $getPrintFormat = $this->printer->getGetFormatForMultipleArrayKeys($parentKeys);
+                $body[] = sprintf('if (isset(%s)) {', sprintf($getPrintFormat, $fromParameterName, $getter));
             }
 
-            if ($toIsArray) {
-                $setFormat = $this->getArrayAccessString($parentKeys);
+            if ($schema->mapToArray()) {
+                $setPrintFormat = $this->printer->getSetFormatForMultipleArrayKeys($parentKeys);
             }
 
-            $body[] = sprintf(
-                $setString . ';',
-                sprintf(
-                    $setFormat,
-                    $toParameterName,
-                    $setter
-                ),
-                sprintf(
-                    $getString,
-                    sprintf(
-                        $getFormat,
-                        $fromParameterName,
-                        $getter
-                    )
-                )
-            );
+            $body[] = $this->printer->printLine($setPrintFormat, $getPrintFormat, $toParameterName, $setter, $fromParameterName, $getter);
 
-            if ($fromIsArray) {
+            if ($schema->mapFromArray()) {
                 $body[] = sprintf('}');
             }
         }
 
         return $body;
-    }
-
-    private function getArrayAccessString(array $parentKeys = [])
-    {
-        $getter = ['$%s'];
-
-        foreach ($parentKeys as $key) {
-            $getter[] = sprintf('["%s"]', $key);
-        }
-
-        $getter[] = '["%s"]';
-
-        return implode($getter);
-    }
-
-    private function getType(AnnotationCollection $annotationCollection, ReflectionProperty $property)
-    {
-        if (!$annotationCollection->exists(Type::NAME)) {
-            return null;
-        }
-
-        /** @var Type $typeAnnotation */
-        foreach ($annotationCollection->get(Type::NAME) as $typeAnnotation) {
-            if ($typeAnnotation->getProperty() !== $property->getName()) {
-                continue;
-            }
-
-            return new ReflectionClass($typeAnnotation->getType());
-        }
-
-        return null;
     }
 }
