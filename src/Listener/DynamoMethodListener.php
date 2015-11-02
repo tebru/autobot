@@ -116,13 +116,13 @@ class DynamoMethodListener
         foreach ($schema->getProperties() as $property) {
             $propertyName = $property->getName();
 
-            if ($this->annotationProvider->shouldExclude($propertyName)) {
+            if ($this->annotationProvider->shouldExclude($propertyName, $parentKeys)) {
                 continue;
             }
 
             // check if a map exists
-            $getter = $this->annotationProvider->getMappedGetter($propertyName);
-            $setter = $this->annotationProvider->getMappedSetter($propertyName);
+            $getter = $this->annotationProvider->getMappedGetter($propertyName, $parentKeys);
+            $setter = $this->annotationProvider->getMappedSetter($propertyName, $parentKeys);
 
             $getterTransformer = $this->annotationProvider->getGetterTransformer();
             if (null !== $getterTransformer) {
@@ -160,7 +160,7 @@ class DynamoMethodListener
                 continue;
             }
 
-            $parameterType = $typeProvider->getType($setter, $propertyName);
+            $parameterType = $typeProvider->getType($setter, $propertyName, $parentKeys);
 
             if ($schema->mapToArray() && null !== $parameterType) {
                 if (isset($this->typeHandlers[$parameterType->getName()])) {

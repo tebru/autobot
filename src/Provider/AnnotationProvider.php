@@ -36,7 +36,7 @@ class AnnotationProvider
         $this->annotationCollection = $annotationCollection;
     }
 
-    public function shouldExclude($propertyName)
+    public function shouldExclude($propertyName, array $parentKeys)
     {
         if (!$this->annotationCollection->exists(Exclude::NAME)) {
             return false;
@@ -45,14 +45,14 @@ class AnnotationProvider
         /** @var Exclude $annotation */
         $annotation = $this->annotationCollection->get(Exclude::NAME);
 
-        if (!$annotation->shouldExclude($propertyName)) {
+        if (!$annotation->shouldExclude($this->getNameParts($propertyName, $parentKeys))) {
             return false;
         }
 
         return true;
     }
 
-    public function getMappedGetter($propertyName)
+    public function getMappedGetter($propertyName, array $parentKeys)
     {
         if (!$this->annotationCollection->exists(Map::NAME)) {
             return null;
@@ -61,7 +61,7 @@ class AnnotationProvider
         /** @var Map $mapAnnotation */
         foreach ($this->annotationCollection->get(Map::NAME) as $mapAnnotation) {
             // skip processing if not for property
-            if ($mapAnnotation->getProperty() !== $propertyName) {
+            if (!in_array($mapAnnotation->getProperty(), $this->getNameParts($propertyName, $parentKeys))) {
                 continue;
             }
 
@@ -71,7 +71,7 @@ class AnnotationProvider
         return null;
     }
 
-    public function getMappedSetter($propertyName)
+    public function getMappedSetter($propertyName, array $parentKeys)
     {
         if (!$this->annotationCollection->exists(Map::NAME)) {
             return null;
@@ -80,7 +80,7 @@ class AnnotationProvider
         /** @var Map $mapAnnotation */
         foreach ($this->annotationCollection->get(Map::NAME) as $mapAnnotation) {
             // skip processing if not for property
-            if ($mapAnnotation->getProperty() !== $propertyName) {
+            if (!in_array($mapAnnotation->getProperty(), $this->getNameParts($propertyName, $parentKeys))) {
                 continue;
             }
 
@@ -114,7 +114,7 @@ class AnnotationProvider
         return $annotation->getTransformer();
     }
 
-    public function getType($propertyName)
+    public function getType($propertyName, array $parentKeys)
     {
         if (!$this->annotationCollection->exists(Type::NAME)) {
             return null;
@@ -122,7 +122,7 @@ class AnnotationProvider
 
         /** @var Type $typeAnnotation */
         foreach ($this->annotationCollection->get(Type::NAME) as $typeAnnotation) {
-            if ($typeAnnotation->getProperty() !== $propertyName) {
+            if (!in_array($typeAnnotation->getProperty(), $this->getNameParts($propertyName, $parentKeys))) {
                 continue;
             }
 
@@ -130,5 +130,24 @@ class AnnotationProvider
         }
 
         return null;
+    }
+
+    private function getNameParts($propertyName, array $parentKeys)
+    {
+        $allParts = array_merge($parentKeys, [$propertyName]);
+
+        $arrayLength = sizeof($allParts);
+        $offset = $arrayLength - 1;
+        $length = 1;
+        $parts = [];
+
+        while ($length <= $arrayLength) {
+            $parts[] = implode('.', array_slice($allParts, $offset, $length));
+
+            $offset--;
+            $length++;
+        }
+
+        return $parts;
     }
 }

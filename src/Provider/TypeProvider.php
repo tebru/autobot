@@ -38,9 +38,9 @@ class TypeProvider
         $this->annotationProvider = $annotationProvider;
     }
 
-    public function getType($setter, $propertyName)
+    public function getType($setter, $propertyName, array $parentKeys)
     {
-        $type = $this->annotationProvider->getType($propertyName);
+        $type = $this->annotationProvider->getType($propertyName, $parentKeys);
 
         if (null !== $type) {
             return $type;

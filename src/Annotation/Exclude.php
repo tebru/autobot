@@ -40,9 +40,15 @@ class Exclude implements DynamoAnnotation
         return $this->excludes;
     }
 
-    public function shouldExclude($propertyName)
+    public function shouldExclude(array $propertyNameParts)
     {
-        return in_array($propertyName, $this->excludes);
+        foreach ($this->excludes as $exclude) {
+            if (in_array($exclude, $propertyNameParts)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
