@@ -175,6 +175,10 @@ class DynamoMethodListener
                     continue;
                 }
 
+                if (in_array($setter, $parentKeys)) {
+                    continue;
+                }
+
                 $nestedClass = new ReflectionClass($parameterType->getName());
                 $nestedClassVariableName = $parameterType->getShortName() . '_' . uniqid();
                 $body[] = $this->printer->printLine(
@@ -205,6 +209,10 @@ class DynamoMethodListener
                     $body[] = $this->printer->printLine($setPrintFormat, $classFormat, $toParameterName, $setter, $fromParameterName, $getter);
                     $body[] = sprintf('}');
 
+                    continue;
+                }
+
+                if (in_array($getter, $parentKeys)) {
                     continue;
                 }
 
