@@ -14,6 +14,7 @@ use Tebru\Autobot\Provider\AnnotationProvider;
 use Tebru\Autobot\Provider\Printer;
 use Tebru\Autobot\Provider\Schema;
 use Tebru\Autobot\Provider\TypeProvider;
+use Tebru\Autobot\TypeHandler;
 use Tebru\Dynamo\Event\MethodEvent;
 use Tebru\Dynamo\Model\ParameterModel;
 
@@ -40,6 +41,11 @@ class DynamoMethodListener
     private $printer;
 
     /**
+     * @var TypeHandler[]
+     */
+    private $typeHandlers = [];
+
+    /**
      * Constructor
      *
      * @param EventDispatcherInterface $eventDispatcher
@@ -47,6 +53,13 @@ class DynamoMethodListener
     public function __construct(EventDispatcherInterface $eventDispatcher)
     {
         $this->eventDispatcher = $eventDispatcher;
+    }
+
+    public function addTypeHandler(TypeHandler $typeHandler)
+    {
+        $this->typeHandlers[$typeHandler->getTypeName()] = $typeHandler;
+
+        return $this;
     }
 
     public function __invoke(MethodEvent $event)
@@ -150,6 +163,18 @@ class DynamoMethodListener
             $parameterType = $typeProvider->getType($setter, $propertyName);
 
             if ($schema->mapToArray() && null !== $parameterType) {
+                if (isset($this->typeHandlers[$parameterType->getName()])) {
+                    $handler = $this->typeHandlers[$parameterType->getName()];
+                    $method = $handler->getMethod();
+                    $arguments = $handler->getMethodArguments();
+                    $format = (empty($arguments))
+                        ? sprintf('->%s()', $method)
+                        : sprintf('->%s("%s")', $method, implode($arguments));
+                    $format = $getPrintFormat . $format;
+                    $body[] = $this->printer->printLine($setPrintFormat, $format, $toParameterName, $setter, $fromParameterName, $getter);
+                    continue;
+                }
+
                 $nestedClass = new ReflectionClass($parameterType->getName());
                 $nestedClassVariableName = $parameterType->getShortName() . '_' . uniqid();
                 $body[] = $this->printer->printLine(
@@ -173,6 +198,16 @@ class DynamoMethodListener
             }
 
             if ($schema->mapFromArray() && null !== $parameterType) {
+                if (isset($this->typeHandlers[$parameterType->getName()])) {
+                    $getPrintFormat = $this->printer->getGetFormatForMultipleArrayKeys($parentKeys);
+                    $body[] = sprintf('if (isset(%s)) {', sprintf($getPrintFormat, $fromParameterName, $getter));
+                    $classFormat = sprintf('new %s(%s)', $parameterType->getName(), $getPrintFormat);
+                    $body[] = $this->printer->printLine($setPrintFormat, $classFormat, $toParameterName, $setter, $fromParameterName, $getter);
+                    $body[] = sprintf('}');
+
+                    continue;
+                }
+
                 $nestedClass = new ReflectionClass($parameterType->getName());
                 $nestedClassVariableName = $nestedClass->getShortName() . '_' . uniqid();
                 $body[] = sprintf('$%s = new %s();', $nestedClassVariableName, $nestedClass->getName());
