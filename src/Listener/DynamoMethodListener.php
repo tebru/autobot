@@ -146,7 +146,7 @@ class DynamoMethodListener
             if (null !== $setterTransformer) {
                 $event = new AccessorTransformerEvent($propertyName, $setter, $schema->getToClass());
                 $this->eventDispatcher->dispatch('accessor_transform.' . $setterTransformer, $event);
-                $setter = $event->getPropertyName();
+                $setter = $event->getAccessor();
             }
 
             // dispatch the default event after a transformer

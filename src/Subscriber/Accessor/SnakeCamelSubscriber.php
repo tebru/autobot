@@ -37,8 +37,8 @@ class SnakeCamelSubscriber implements EventSubscriberInterface
     public static function getSubscribedEvents()
     {
         return [
-            'accessor_transformer.snake_to_camel' => 'transformSnakeToCamel',
-            'accessor_transformer.camel_to_snake' => 'transformCamelToSnake',
+            'accessor_transform.snake_to_camel' => 'transformSnakeToCamel',
+            'accessor_transform.camel_to_snake' => 'transformCamelToSnake',
         ];
     }
 
