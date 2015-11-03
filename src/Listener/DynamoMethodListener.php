@@ -206,6 +206,7 @@ class DynamoMethodListener
                         $fromParameterName,
                         $getter
                     );
+                    $body[] = sprintf('if (null !== $%s) {', $nestedClassVariableName);
                     $parentKeysSend = array_merge($parentKeys, [$setter]);
                 }
 
@@ -218,6 +219,8 @@ class DynamoMethodListener
                 );
 
                 if ($looping) {
+                    $body[] = sprintf('}');
+                } else {
                     $body[] = sprintf('}');
                 }
 
