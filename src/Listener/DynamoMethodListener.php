@@ -111,6 +111,10 @@ class DynamoMethodListener
         $fromParameterName,
         array $parentKeys = []
     ) {
+        if (sizeof($parentKeys) >= $this->annotationProvider->getDepth()) {
+            return $body;
+        }
+
         $typeProvider = new TypeProvider($schema, $this->annotationProvider);
 
         foreach ($schema->getProperties() as $property) {
@@ -163,60 +167,75 @@ class DynamoMethodListener
             $parameterType = $typeProvider->getType($setter, $propertyName, $parentKeys);
 
             if ($schema->mapToArray() && null !== $parameterType) {
-                if (isset($this->typeHandlers[$parameterType->getName()])) {
-                    $handler = $this->typeHandlers[$parameterType->getName()];
+                $looping = false;
+
+                // check if type is array<XYZ> or ArrayCollection<XYZ>
+                if (preg_match('/^(?:array|ArrayCollection)<(.+)>$/', $parameterType, $matches)) {
+                    $parameterType = $matches[1];
+                    $looping = true;
+                }
+
+                if (isset($this->typeHandlers[$parameterType])) {
+                    $handler = $this->typeHandlers[$parameterType];
                     $method = $handler->getMethod();
                     $arguments = $handler->getMethodArguments();
                     $format = (empty($arguments))
                         ? sprintf('->%s()', $method)
                         : sprintf('->%s("%s")', $method, implode($arguments));
                     $format = $getPrintFormat . $format;
+                    $setPrintFormat = $this->printer->getSetFormatForMultipleArrayKeys($parentKeys);
                     $body[] = $this->printer->printLine($setPrintFormat, $format, $toParameterName, $setter, $fromParameterName, $getter);
                     continue;
                 }
 
-                if (in_array($setter, $parentKeys)) {
-                    continue;
+                if ($looping) {
+                    $nestedClass = new ReflectionClass($parameterType);
+                    $keyVariable = '$key' . uniqid();
+                    $valueVariable = 'value' . uniqid();
+                    $nestedClassVariableName = $valueVariable;
+                    $body[] = sprintf('foreach (%s as %s => $%s) {', sprintf($getPrintFormat, $fromParameterName, $getter), $keyVariable, $valueVariable);
+                    $parentKeysSend = array_merge($parentKeys, [$setter, $keyVariable]);
+                } else {
+                    $nestedClass = new ReflectionClass($parameterType);
+                    $nestedClassVariableName = $nestedClass->getShortName() . '_' . uniqid();
+                    $body[] = $this->printer->printLine(
+                        Printer::SET_FORMAT_VARIABLE,
+                        $getPrintFormat,
+                        $nestedClassVariableName,
+                        '',
+                        $fromParameterName,
+                        $getter
+                    );
+                    $parentKeysSend = array_merge($parentKeys, [$setter]);
                 }
-
-                $nestedClass = new ReflectionClass($parameterType->getName());
-                $nestedClassVariableName = $parameterType->getShortName() . '_' . uniqid();
-                $body[] = $this->printer->printLine(
-                    Printer::SET_FORMAT_VARIABLE,
-                    $getPrintFormat,
-                    $nestedClassVariableName,
-                    '',
-                    $fromParameterName,
-                    $getter
-                );
 
                 $body = $this->parseClassProperties(
                     new Schema($schema->getToClass(), $nestedClass),
                     $body,
                     $toParameterName,
                     $nestedClassVariableName,
-                    array_merge($parentKeys, [$setter])
+                    $parentKeysSend
                 );
+
+                if ($looping) {
+                    $body[] = sprintf('}');
+                }
 
                 continue;
             }
 
             if ($schema->mapFromArray() && null !== $parameterType) {
-                if (isset($this->typeHandlers[$parameterType->getName()])) {
+                if (isset($this->typeHandlers[$parameterType])) {
                     $getPrintFormat = $this->printer->getGetFormatForMultipleArrayKeys($parentKeys);
                     $body[] = sprintf('if (isset(%s)) {', sprintf($getPrintFormat, $fromParameterName, $getter));
-                    $classFormat = sprintf('new %s(%s)', $parameterType->getName(), $getPrintFormat);
+                    $classFormat = sprintf('new %s(%s)', $parameterType, $getPrintFormat);
                     $body[] = $this->printer->printLine($setPrintFormat, $classFormat, $toParameterName, $setter, $fromParameterName, $getter);
                     $body[] = sprintf('}');
 
                     continue;
                 }
 
-                if (in_array($getter, $parentKeys)) {
-                    continue;
-                }
-
-                $nestedClass = new ReflectionClass($parameterType->getName());
+                $nestedClass = new ReflectionClass($parameterType);
                 $nestedClassVariableName = $nestedClass->getShortName() . '_' . uniqid();
                 $body[] = sprintf('$%s = new %s();', $nestedClassVariableName, $nestedClass->getName());
 

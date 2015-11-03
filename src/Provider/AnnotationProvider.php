@@ -7,6 +7,7 @@
 namespace Tebru\Autobot\Provider;
 
 use ReflectionClass;
+use Tebru\Autobot\Annotation\Depth;
 use Tebru\Autobot\Annotation\Exclude;
 use Tebru\Autobot\Annotation\GetterTransform;
 use Tebru\Autobot\Annotation\Map;
@@ -21,6 +22,8 @@ use Tebru\Dynamo\Collection\AnnotationCollection;
  */
 class AnnotationProvider
 {
+    const DEFAULT_DEPTH = 10;
+
     /**
      * @var AnnotationCollection
      */
@@ -126,15 +129,33 @@ class AnnotationProvider
                 continue;
             }
 
-            return new ReflectionClass($typeAnnotation->getType());
+            return $typeAnnotation->getType();
         }
 
         return null;
     }
 
+    public function getDepth()
+    {
+        if (!$this->annotationCollection->exists(Depth::NAME)) {
+            return self::DEFAULT_DEPTH;
+        }
+
+
+        /** @var Depth $annotation */
+        $annotation = $this->annotationCollection->get(Depth::NAME);
+
+        return $annotation->getDepth();
+    }
+
     private function getNameParts($propertyName, array $parentKeys)
     {
         $allParts = array_merge($parentKeys, [$propertyName]);
+
+        // remove loop variable from chain
+        $allParts = array_filter($allParts, function ($value) {
+            return false === strstr($value, '$key');
+        });
 
         $arrayLength = sizeof($allParts);
         $offset = $arrayLength - 1;

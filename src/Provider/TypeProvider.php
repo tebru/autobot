@@ -57,6 +57,10 @@ class TypeProvider
         $parameter = $setterMethod->getParameters()[0];
         $parameterType = $parameter->getClass();
 
-        return $parameterType;
+        if (null === $parameterType) {
+            return null;
+        }
+
+        return $parameterType->getName();
     }
 }
